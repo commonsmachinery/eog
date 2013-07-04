@@ -30,22 +30,53 @@
 #include <gtk/gtk.h>
 #include "eog-clipboard-handler.h"
 
+#if HAVE_EXEMPI
+#include <exempi/xmp.h>
+#include <string.h>
+#endif
+
 enum {
 	PROP_0,
 	PROP_PIXBUF,
-	PROP_URI
+	PROP_URI,
+#if HAVE_EXEMPI
+	PROP_XMP,
+#endif
 };
 
 enum {
 	TARGET_PIXBUF,
 	TARGET_TEXT,
-	TARGET_URI
+	TARGET_URI,
+#if HAVE_EXEMPI
+	TARGET_XMP,
+#endif
 };
 
 struct _EogClipboardHandlerPrivate {
 	GdkPixbuf *pixbuf;
 	gchar     *uri;
+#if HAVE_EXEMPI
+	XmpPtr    xmp;
+#endif	
 };
+
+
+#if HAVE_EXEMPI
+#define MIME_TYPE_XMP "application/rdf+xml"
+static GdkAtom xmp_atom;
+
+static GdkAtom
+get_xmp_atom (void)
+{
+	if (!xmp_atom) {
+		xmp_atom = gdk_atom_intern_static_string(MIME_TYPE_XMP);
+	}
+
+	return xmp_atom;
+}
+
+#endif
 
 #define EOG_CLIPBOARD_HANDLER_GET_PRIVATE(object) \
 	(G_TYPE_INSTANCE_GET_PRIVATE ((object), EOG_TYPE_CLIPBOARD_HANDLER, EogClipboardHandlerPrivate))
@@ -67,6 +98,18 @@ eog_clipboard_handler_get_uri (EogClipboardHandler *handler)
 
 	return handler->priv->uri;
 }
+
+#ifdef HAVE_EXEMPI
+
+// Does not return a new object, user must xmp_copy() if they need that.
+static const XmpPtr
+eog_clipboard_handler_get_xmp (EogClipboardHandler *handler)
+{
+	g_return_val_if_fail (EOG_IS_CLIPBOARD_HANDLER (handler), NULL);
+
+	return handler->priv->xmp;
+}
+#endif // HAVE_EXEMPI
 
 static void
 eog_clipboard_handler_set_pixbuf (EogClipboardHandler *handler, GdkPixbuf *pixbuf)
@@ -97,6 +140,21 @@ eog_clipboard_handler_set_uri (EogClipboardHandler *handler, const gchar *uri)
 	g_object_notify (G_OBJECT (handler), "uri");
 }
 
+#if HAVE_EXEMPI
+// Takes over ownership of the xmp object - caller must call xmp_copy() if necessary
+static void
+eog_clipboard_handler_set_xmp (EogClipboardHandler *handler, XmpPtr xmp)
+{
+	g_return_if_fail (EOG_IS_CLIPBOARD_HANDLER (handler));
+
+	if (handler->priv->xmp != NULL)
+		xmp_free (handler->priv->xmp);
+
+	handler->priv->xmp = xmp;
+	g_object_notify (G_OBJECT (handler), "xmp");
+}
+#endif // HAVE_EXEMPI
+
 static void
 eog_clipboard_handler_get_property (GObject *object, guint property_id,
 				    GValue *value, GParamSpec *pspec)
@@ -116,6 +174,12 @@ eog_clipboard_handler_get_property (GObject *object, guint property_id,
 		g_value_set_string (value,
 				    eog_clipboard_handler_get_uri (handler));
 		break;
+#if HAVE_EXEMPI
+	case PROP_XMP:
+		g_value_set_pointer (value,
+				     eog_clipboard_handler_get_xmp (handler));
+		break;
+#endif
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
 	}
@@ -148,6 +212,16 @@ eog_clipboard_handler_set_property (GObject *object, guint property_id,
 		eog_clipboard_handler_set_uri (handler, uri);
 		break;
 	}
+#if HAVE_EXEMPI
+	case PROP_XMP:
+	{
+		XmpPtr xmp;
+
+		xmp = g_value_get_pointer (value);
+		eog_clipboard_handler_set_xmp (handler, xmp);
+		break;
+	}
+#endif
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
 	}
@@ -171,7 +245,13 @@ eog_clipboard_handler_dispose (GObject *obj)
 		g_free (priv->uri);
 		priv->uri = NULL;
 	}
-
+#ifdef HAVE_EXEMPI
+	if (priv->xmp) {
+		xmp_free(priv->xmp);
+		priv->xmp = NULL;
+	}
+#endif
+	
 	G_OBJECT_CLASS (eog_clipboard_handler_parent_class)->dispose (obj);
 }
 
@@ -203,6 +283,14 @@ eog_clipboard_handler_class_init (EogClipboardHandlerClass *klass)
 		g_param_spec_string ("uri", NULL, NULL, NULL,
 				     G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY |
 				     G_PARAM_STATIC_STRINGS));
+
+#ifdef HAVE_EXEMPI
+	g_object_class_install_property (
+		g_obj_class, PROP_XMP,
+		g_param_spec_pointer ("xmp", NULL, NULL, 
+				      G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY |
+				      G_PARAM_STATIC_STRINGS));
+#endif
 }
 
 EogClipboardHandler*
@@ -212,19 +300,32 @@ eog_clipboard_handler_new (EogImage *img)
 	GFile *file;
 	GdkPixbuf *pbuf;
 	gchar *uri;
+#ifdef HAVE_EXEMPI
+	XmpPtr *xmp;
+#endif	
 
 	g_object_ref (img);
 	pbuf = eog_image_get_pixbuf (img);
 	file = eog_image_get_file (img);
 	uri = g_file_get_uri (file);
+#ifdef HAVE_EXEMPI
+	// EogImage copies the XMP structure for us
+	xmp = eog_image_get_xmp_info (img);
+#endif
 	obj = g_object_new (EOG_TYPE_CLIPBOARD_HANDLER,
 			    "pixbuf", pbuf,
 			    "uri", uri,
+#ifdef HAVE_EXEMPI
+			    "xmp", xmp,
+#endif
 			    NULL);
 	g_free (uri);
 	g_object_unref (file);
 	g_object_unref (pbuf);
 	g_object_unref (img);
+
+	// We keep the XMP pointer in the object and thus don't free
+	// it here. Don't know if that is kosher, though.
 
 	return EOG_CLIPBOARD_HANDLER (obj);
 
@@ -267,6 +368,39 @@ eog_clipboard_handler_get_func (GtkClipboard *clipboard,
 		g_free (uris[0]);
 		break;
 	}
+
+#ifdef HAVE_EXEMPI
+	case TARGET_XMP:
+	{
+		// Serialize the XMP into XML
+		XmpStringPtr str;
+		gboolean serialized = FALSE;
+
+		str = xmp_string_new ();
+		if (str) {
+			serialized = xmp_serialize (
+				eog_clipboard_handler_get_xmp (handler),
+				str,
+				(XMP_SERIAL_OMITPACKETWRAPPER
+				 | XMP_SERIAL_ENCODEUTF8),
+				0);
+		}
+
+		if (serialized) {
+			const char * cstr;
+
+			cstr = xmp_string_cstr (str);
+				
+			gtk_selection_data_set (
+				selection, get_xmp_atom (), 8,
+				(const guchar*) cstr, strlen (cstr));
+		}
+		// TODO: what if serialization fails?
+#endif // HAVE_EXEMPI
+		
+		break;
+	}
+
 	default:
 		g_return_if_reached ();
 	}
@@ -299,6 +433,13 @@ eog_clipboard_handler_copy_to_clipboard (EogClipboardHandler *handler,
 		gtk_target_list_add_text_targets (tlist, TARGET_TEXT);
 		gtk_target_list_add_uri_targets (tlist, TARGET_URI);
 	}
+
+#ifdef HAVE_EXEMPI
+	if (handler->priv->xmp != NULL) {
+		gtk_target_list_add (tlist, get_xmp_atom (), 0, TARGET_XMP);
+	}
+#endif
+
 
 	targets = gtk_target_table_new_from_list (tlist, &n_targets);
 
