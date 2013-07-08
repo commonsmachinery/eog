@@ -63,7 +63,10 @@ struct _EogClipboardHandlerPrivate {
 
 
 #if HAVE_EXEMPI
+#define XMP_XML_HEADER "<?xml version='1.0' encoding='UTF-8'?>\n"
+
 #define MIME_TYPE_XMP "application/rdf+xml"
+
 static GdkAtom xmp_atom;
 
 static GdkAtom
@@ -374,6 +377,8 @@ eog_clipboard_handler_get_func (GtkClipboard *clipboard,
 	{
 		// Serialize the XMP into XML
 		XmpStringPtr str;
+		const char *xmp_element;
+		gchar *xml_doc = NULL;
 		gboolean serialized = FALSE;
 
 		str = xmp_string_new ();
@@ -387,15 +392,24 @@ eog_clipboard_handler_get_func (GtkClipboard *clipboard,
 		}
 
 		if (serialized) {
-			const char * cstr;
+			xmp_element = xmp_string_cstr (str);
+			xml_doc = g_strconcat (XMP_XML_HEADER, xmp_element, NULL);
+		}
 
-			cstr = xmp_string_cstr (str);
-				
+		if (xml_doc) {
 			gtk_selection_data_set (
 				selection, get_xmp_atom (), 8,
-				(const guchar*) cstr, strlen (cstr));
+				(const guchar*) xml_doc, strlen (xml_doc));
+			
+			g_free (xml_doc);
+			xml_doc = NULL;
 		}
-		// TODO: what if serialization fails?
+		
+		if (str) {
+			xmp_string_free (str);
+			str = NULL;
+		}
+		
 #endif // HAVE_EXEMPI
 		
 		break;
